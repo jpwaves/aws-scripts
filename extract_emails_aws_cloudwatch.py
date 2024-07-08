@@ -91,4 +91,5 @@ if __name__ == "__main__":
     else:
         # Note: because each log event has its own log stream, pulling from cloudwatch isn't reliable because it will only get the 50 most recent log events.
         # the queried log streams may have events that aren't bounce events, so until log streams are aggregated to be by day instead of per log event, this method is not reliable.
-        extract_bounced_emails_from_cloudwatch()
+        #extract_bounced_emails_from_cloudwatch()
+        print("this method is disabled for now until the log streams are aggregated to be by day instead of per log event so that we don't rack up an insane bill on queries.")
