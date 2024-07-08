@@ -11,8 +11,8 @@ cloudwatch_logs_client = boto3.client('logs')
 def clean_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
-def print_emails(email_reasons):
-    print("Bounced emails (total: %d):" % len(email_reasons))
+def print_emails(email_reasons, from_csv=False):
+    print("Bounced emails %s (total=%d):" % (("from CSV" if from_csv else "from Cloudwatch"), len(email_reasons)))
     for email, reasons in email_reasons.items():
         print(f"+ {email}:")
         for reason in reasons:
@@ -32,19 +32,15 @@ def process_event(event, email_reasons):
             if email:
                 email_reasons[email].add(reason)
     except json.JSONDecodeError as e:
-        print(f"Error parsing JSON in row: {e}", file=sys.stderr)
+        print(f"Error parsing JSON in event: {e}", file=sys.stderr)
     except KeyError as e:
-        print(f"Missing key in row: {e}", file=sys.stderr)
+        print(f"Missing key in event: {e}", file=sys.stderr)
     except Exception as e:
-        print(f"Unexpected error processing row: {e}", file=sys.stderr)
+        print(f"Unexpected error processing event: {e}", file=sys.stderr)
 
-def process_log_events(log_events):
-    email_reasons = defaultdict(set)
-
+def process_log_events(log_events, email_reasons):
     for event in log_events:
         process_event(event, email_reasons)
-
-    print_emails(email_reasons)
 
 def extract_bounced_emails_from_cloudwatch():
     log_streams = cloudwatch_logs_client.describe_log_streams(
@@ -52,12 +48,16 @@ def extract_bounced_emails_from_cloudwatch():
         descending=True,
     )["logStreams"]
 
+    email_reasons = defaultdict(set)
+    
     for log_stream in log_streams:
         events = cloudwatch_logs_client.get_log_events(
             logGroupIdentifier=log_stream["arn"],
             logStreamName=log_stream["logStreamName"],
         )
-        process_log_events(events["events"])
+        process_log_events(events["events"], email_reasons)
+
+    print_emails(email_reasons)
 
 def process_csv(file_path):
     email_reasons = defaultdict(set)
@@ -68,7 +68,7 @@ def process_csv(file_path):
             for row in reader:
                 process_event(row, email_reasons)
 
-        print_emails(email_reasons)
+        print_emails(email_reasons, from_csv=True)
 
     except FileNotFoundError:
         print(f"File not found: {file_path}", file=sys.stderr)
