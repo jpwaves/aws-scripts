@@ -12,14 +12,14 @@ cloudwatch_logs_client = boto3.client('logs')
 class EventType(Enum):
     BOUNCE = 'Bounce'
     DELIVERY = 'Delivery'
+    OPEN = 'Open'
     SEND = 'Send'
 
 class CSVEmailsProcessor:
     def __default_value(self):
         return {
-            "type": None,
+            "types": [],
             "reasons": set(),
-            "occurred_at": None
         }
 
     def __init__(self, csv_file_path):
@@ -28,11 +28,14 @@ class CSVEmailsProcessor:
 
     def print_emails(self, event_type=None, verbose=False, sort_by_date=False, sort_by_email=False):
         emails_to_print = self.processed_emails
+
+        emails_to_print = {email: {"types": sorted(data["types"], key=lambda x: x["occurred_at"]), "reasons": data["reasons"]} for email, data in emails_to_print.items()}
+
         if event_type:
-            emails_to_print = {email: data for email, data in self.processed_emails.items() if data["type"] == event_type}
+            emails_to_print = {email: data for email, data in self.processed_emails.items() if event_type in data["types"]}
 
         if sort_by_date:
-            emails_to_print = {k: v for k, v in sorted(emails_to_print.items(), key=lambda item: item[1]["occurred_at"])}
+            emails_to_print = {k: v for k, v in sorted(emails_to_print.items(), key=lambda x: x[1]["types"][0]["occurred_at"])}
 
         if sort_by_email:
             emails_to_print = {k: v for k, v in sorted(emails_to_print.items())}
@@ -41,11 +44,11 @@ class CSVEmailsProcessor:
         for email, data in emails_to_print.items():
             if verbose:
                 print(f"+ {email}:")
-                print(f"  • Type: {data['type']}")
-                print(f"  • Occurred at: {data['occurred_at']}")
-                if data["type"] == EventType.BOUNCE:
+                print('  • Types:\n' + '\n'.join([f"    • {event['type']} at {event["occurred_at"]}" for event in data["types"]]))
+                if data["reasons"]:
+                    print('  • Bounce Reasons:')
                     for reason in data["reasons"]:
-                        print(f"  • {reason}")
+                        print(f"    • {reason}")
                 print()
             else:
                 print(email)
@@ -74,6 +77,8 @@ class CSVEmailsProcessor:
                 self.__process_bounce(message)
             elif eventType == 'Delivery':
                 self.__process_delivery(message)
+            elif eventType == 'Open':
+                self.__process_open(message)
             elif eventType == 'Send':
                 self.__process_send(message)
             else:
@@ -97,7 +102,7 @@ class CSVEmailsProcessor:
         else:
             return divider + "Processed Emails (total=%d):" % total_emails
 
-    def __clean_text(text):
+    def __clean_text(self, text):
         return re.sub(r'\s+', ' ', text).strip()
 
     def __process_bounce(self, event):
@@ -110,9 +115,8 @@ class CSVEmailsProcessor:
             occurred_at = bounce.get('timestamp')
             reason = self.__clean_text(reason)
             if email:
-                self.processed_emails[email]["type"] = EventType.BOUNCE
+                self.processed_emails[email]["types"].append({ "type": EventType.BOUNCE, "occurred_at": occurred_at })
                 self.processed_emails[email]["reasons"].add(reason)
-                self.processed_emails[email]["occurred_at"] = occurred_at
 
     def __process_delivery(self, event):
         delivery = event.get('delivery', {})
@@ -120,8 +124,17 @@ class CSVEmailsProcessor:
 
         for recipient in delivery_recipients:
             delivered_at = delivery.get('timestamp')
-            self.processed_emails[recipient]["type"] = EventType.DELIVERY
+            self.processed_emails[recipient]["types"].append({ "type": EventType.DELIVERY, "occurred_at": delivered_at })
             self.processed_emails[recipient]["occurred_at"] = delivered_at
+
+    def __process_open(self, event):
+        mail = event.get('mail', {})
+        destination = mail.get('destination', [])
+        open = event.get('open', {})
+        opened_at = open.get('timestamp')
+
+        for recipient in destination:
+            self.processed_emails[recipient]["types"].append({ "type": EventType.OPEN, "occurred_at": opened_at })
 
     def __process_send(self, event):
         send = event.get('mail', {})
@@ -129,8 +142,7 @@ class CSVEmailsProcessor:
 
         for recipient in destination:
             sent_at = send.get('timestamp')
-            self.processed_emails[recipient]["type"] = EventType.SEND
-            self.processed_emails[recipient]["occurred_at"] = sent_at
+            self.processed_emails[recipient]["types"].append({ "type": EventType.SEND, "occurred_at": sent_at })
 
 # def extract_bounced_emails_from_cloudwatch():
 #     log_streams = cloudwatch_logs_client.describe_log_streams(
@@ -155,6 +167,7 @@ def configure_args():
     parser.add_argument('-v', '--verbose', action='store_true', help='Prints more detailed information about each email')
     parser.add_argument('-d', '--sort-by-date', action='store_true', help='Sorts the emails by the date they occurred')
     parser.add_argument('-e', '--sort-by-email', action='store_true', help='Sorts the emails by the email name in alphabetical order')
+    parser.add_argument('-t', '--event-type', choices=[EventType.BOUNCE.value, EventType.DELIVERY.value, EventType.OPEN.value, EventType.SEND.value], help='Filter emails by event type')
     return parser
 
 if __name__ == "__main__":
@@ -166,7 +179,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if command_args.csv != None:
-        CSVEmailsProcessor(command_args.csv).process().print_emails(verbose=command_args.verbose, sort_by_date=command_args.sort_by_date, sort_by_email=command_args.sort_by_email)
+        CSVEmailsProcessor(command_args.csv).process().print_emails(verbose=command_args.verbose, sort_by_date=command_args.sort_by_date, sort_by_email=command_args.sort_by_email, event_type=command_args.event_type)
     else:
         # Note: because each log event has its own log stream, pulling from cloudwatch isn't reliable because it will only get the 50 most recent log events.
         # the queried log streams may have events that aren't bounce events, so until log streams are aggregated to be by day instead of per log event, this method is not reliable.
